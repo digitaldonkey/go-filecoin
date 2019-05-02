@@ -1,8 +1,11 @@
 package internal
 
 import (
+	"bytes"
 	"io/ioutil"
+	"log"
 	"os"
+	"path"
 	"strconv"
 	"testing"
 
@@ -13,28 +16,6 @@ import (
 	"github.com/filecoin-project/go-filecoin/repo"
 )
 
-// RequireMakeTempDir ensures that a temporary directory is created
-func RequireMakeTempDir(t *testing.T, dirname string) string {
-	newdir, err := ioutil.TempDir("", dirname)
-	require.NoError(t, err)
-	return newdir
-}
-
-// RequireRemoveAll ensures that the error condition is checked when we clean up
-// after creating a temporary directory.
-func RequireRemoveAll(t *testing.T, path string) {
-	require.NoError(t, os.RemoveAll(path))
-}
-
-// RequireOpenTempFile is a shortcut for opening a given temp file with a given
-// suffix, then returning both a filename and a file pointer.
-func RequireOpenTempFile(t *testing.T, suffix string) (*os.File, string) {
-	file, err := ioutil.TempFile("", suffix)
-	require.NoError(t, err)
-	name := file.Name()
-	return file, name
-}
-
 // AssertLogged asserts that a given string is contained in the given log file.
 func AssertLogged(t *testing.T, logFile *os.File, subStr string) {
 	out, err := ioutil.ReadFile(logFile.Name())
@@ -43,32 +24,41 @@ func AssertLogged(t *testing.T, logFile *os.File, subStr string) {
 	assert.Contains(t, outStr, subStr)
 }
 
-// RequireSetupTestRepo sets up a repo dir with a symlink pointing to it.
-// Caller is responsible for deleting dir and symlink.
-func RequireSetupTestRepo(t *testing.T, repoVersion uint) (repoDir, symLink string) {
-	repoDir = RequireMakeTempDir(t, "testrepo")
-	require.NoError(t, repo.InitFSRepo(repoDir, config.NewDefaultConfig()))
-
-	symLink = repoDir + "-reposymlink"
-	require.NoError(t, os.Symlink(repoDir, symLink))
-
-	require.NoError(t, repo.WriteVersion(repoDir, repoVersion))
-	return repoDir, symLink
+// RequireInitRepo establishes a new repo symlink and directory inside a temporary container
+// directory. Migrations of the repo are expected to be placed within the same container, such
+// that a test can clean up arbitrary migrations by removing the container.
+// Returns the path to the container directory, and the repo symlink inside it.
+func RequireInitRepo(t *testing.T, version uint) (container, repoLink string) {
+	container = repo.RequireMakeTempDir(t, "migration-test")
+	repoLink = path.Join(container, "repo")
+	err := repo.InitFSRepo(repoLink, version, config.NewDefaultConfig())
+	require.NoError(t, err)
+	return
 }
 
-// AssertNotInstalled verifies that repoLink still points to oldRepoDir
-func AssertNotInstalled(t *testing.T, oldRepoDir, repoLink string) {
+// CaptureOutput redirects log content into a buffer and calls the function provided,
+// and returns buffer content.
+func CaptureOutput(f func()) string {
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	f()
+	log.SetOutput(os.Stderr)
+	return buf.String()
+}
+
+// AssertLinked verifies that repoLink points to oldRepoDir
+func AssertLinked(t *testing.T, repoDir, repoLink string) {
 	newRepoTarget, err := os.Readlink(repoLink)
 	require.NoError(t, err)
-	assert.Equal(t, newRepoTarget, oldRepoDir)
+	assert.Equal(t, newRepoTarget, repoDir)
 }
 
-// AssertInstalled verifies that the repoLink points to newRepoDir, and that
+// AssertNewRepoInstalled verifies that the repoLink points to newRepoDir, and that
 // oldRepoDir is still there
-func AssertInstalled(t *testing.T, newRepoDir, oldRepoDir, repoLink string) {
-	newRepoTarget, err := os.Readlink(repoLink)
+func AssertNewRepoInstalled(t *testing.T, newRepoDir, oldRepoDir, repoLink string) {
+	linkTarget, err := os.Readlink(repoLink)
 	require.NoError(t, err)
-	assert.Equal(t, newRepoTarget, newRepoDir)
+	assert.Equal(t, newRepoDir, linkTarget)
 	oldRepoStat, err := os.Stat(oldRepoDir)
 	require.NoError(t, err)
 	assert.True(t, oldRepoStat.IsDir())
