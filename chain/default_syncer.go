@@ -274,23 +274,32 @@ func (syncer *DefaultSyncer) syncOne(ctx context.Context, parent, next types.Tip
 	}
 
 	if heavier {
-		// Gather the entire new chain for reorg comparison.
-		// See Issue #2151 for making this scalable.
-		iterator := IterAncestors(ctx, syncer.chainStore, parent)
-		newChain, err := CollectTipSetsOfHeightAtLeast(ctx, iterator, types.NewBlockHeight(uint64(0)))
-		if err != nil {
-			return err
-		}
-		newChain = append(newChain, next)
-		if IsReorg(*headTipSet, newChain) {
-			logSyncer.Infof("reorg occurring while switching from %s to %s", headTipSet.String(), next.String())
-		}
 		if err = syncer.chainStore.SetHead(ctx, next); err != nil {
 			return err
 		}
+		// Gather the entire new chain for reorg comparison and logging.
+		syncer.logReorg(ctx, headTipSet, next)
 	}
 
 	return nil
+}
+
+func (syncer *DefaultSyncer) logReorg(ctx, curHead, newHead) {
+	curHeadIter := IterAncestors(ctx, syncer.chainStore, curHead)
+	newHeadIter := IterAncestors(ctx, syncer.chainStore, newHead)
+	commonAncestor, err := FindCommonAncestor(curHeadItern, newHeadIter)
+	if err != nil {
+		logSyncer.Debugf("unexpected error when running FindCommonAncestor for reorg log: %s", err.Error())
+		return
+	}	
+
+	// Refresh iterators modified above
+	curHeadIter = IterAncestors(ctx, syncer.chainStore, curHead)
+	newHeadIter = IterAncestors(ctx, syncer.chainStore, newHead)	
+	reorg, dropped := IsReorg(curHeadIter, newHeadIter, commonAncestor)
+	if reorg {
+		logSyncer.Infof("dropped %d tipsets in reorg from %s to %s", dropped, headTipSetAndState.TipSet.String(), next.String())
+	}
 }
 
 // widen computes a tipset implied by the input tipset and the store that
