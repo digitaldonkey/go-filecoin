@@ -14,14 +14,6 @@ ARG FILECOIN_PARAMETER_CACHE="./tmp/filecoin-proof-parameters"
 ARG FILECOIN_USE_PRECOMPILED_RUST_PROOFS=yes
 ARG FILECOIN_USE_PRECOMPILED_BLS_SIGNATURES=yes
 
-COPY . $SRC_DIR
-
-# Build the thing.
-RUN cd $SRC_DIR \
-  && . $HOME/.cargo/env \
-  && go run ./build/*go deps \
-  && go run ./build/*go build
-
 # Get su-exec, a very minimal tool for dropping privileges,
 # and tini, a very minimal init daemon for containers
 ENV SUEXEC_VERSION v0.2
@@ -36,6 +28,40 @@ RUN set -x \
   && wget -q -O tini https://github.com/krallin/tini/releases/download/$TINI_VERSION/tini \
   && chmod +x tini
 
+# We want to populate the module cache based on the go.{mod,sum} files.
+# This is the ‘magic’ step that will download all the dependencies that are specified in
+# the go.mod and go.sum file.
+# Because of how the layer caching system works in Docker, the  go mod download
+# command will _ only_ be re-run when the go.mod or go.sum file change
+# (or when we add another docker instruction this line)
+
+WORKDIR /go/src/github.com/filecoin-project/go-filecoin
+
+# Populate the module cache based on the go.{mod,sum} files.
+COPY go.mod .
+COPY go.sum .
+
+# This is the ‘magic’ step that will download all the dependencies that are specified in
+# the go.mod and go.sum file.
+# Because of how the layer caching system works in Docker, the  go mod download
+# command will _ only_ be re-run when the go.mod or go.sum file change
+# (or when we add another docker instruction this line)
+RUN go mod download
+# See https://container-solutions.com/faster-builds-in-docker-with-go-1-11/
+# Duplicated in https://github.com/filecoin-project/go-filecoin/blob/e290fb7d3fc5550740f144d8cf99eea08a14161d/build/main.go#L120
+
+COPY . .
+# COPY ./scripts ./proofs ./.git .
+RUN . $HOME/.cargo/env && \
+    ./scripts/install-rust-fil-proofs.sh && \
+    ./scripts/install-bls-signatures.sh && \
+    ./scripts/install-filecoin-parameters.sh
+
+COPY . .
+# RUN cd $SRC_DIR && go mod download # Double time instead of speedup?
+
+# Build the all.
+RUN go run ./build/*go build
 
 # Now comes the actual target image, which aims to be as small as possible.
 FROM busybox:1-glibc AS filecoin
@@ -48,7 +74,7 @@ COPY --from=builder $SRC_DIR/go-filecoin /usr/local/bin/go-filecoin
 COPY --from=builder $SRC_DIR/bin/container_daemon /usr/local/bin/start_filecoin
 COPY --from=builder $SRC_DIR/bin/devnet_start /usr/local/bin/devnet_start
 COPY --from=builder $SRC_DIR/bin/node_restart /usr/local/bin/node_restart
-COPY --from=builder $SRC_DIR/fixtures/ /data/
+COPY --from=builder $SRC_DIR/fixtures/ /data/fixtures
 COPY --from=builder $SRC_DIR/gengen/gengen /usr/local/bin/gengen
 COPY --from=builder /tmp/su-exec/su-exec /sbin/su-exec
 COPY --from=builder /tmp/tini /sbin/tini
@@ -68,19 +94,42 @@ RUN wget -q -O /usr/local/bin/jq https://github.com/stedolan/jq/releases/downloa
 EXPOSE 6000
 EXPOSE 3453
 
+# TODO
+# The following needs to be migrated to a docker-entrypoint.sh
+#
+# @see /usr/local/bin/start_filecoin (== go-filecoin/bin/container_daemon)
+# @see https://github.com/digitaldonkey/docker-go-filecoin/blob/master/docker-entrypoint.sh
+#
+# Basically the CI Dockerfile must NOT add User/$FILECOIN_PATH but a default startup script,
+# which you can override to provide a local path.
+
+
 # Create the fs-repo directory and switch to a non-privileged user.
-ENV FILECOIN_PATH /data/filecoin
-RUN mkdir -p $FILECOIN_PATH \
-  && adduser -D -h $FILECOIN_PATH -u 1000 -G users filecoin \
-  && chown filecoin:users $FILECOIN_PATH
+# ENV FILECOIN_PATH /data/filecoin
+# RUN ls -al  $FILECOIN_PATH
+# RUN mkdir -p $FILECOIN_PATH \
+#   && adduser -D -h $FILECOIN_PATH -u 1000 -G users filecoin \
+#   && chown filecoin:users $FILECOIN_PATH
 
 # Expose the fs-repo as a volume.
 # start_filecoin initializes an fs-repo if none is mounted.
 # Important this happens after the USER directive so permission are correct.
-VOLUME $FILECOIN_PATH
+# VOLUME $FILECOIN_PATH
 
 # There's an fs-repo, and initializes one if there isn't.
-ENTRYPOINT ["/sbin/tini", "--", "/usr/local/bin/start_filecoin"]
+#
+# go-filecoin/bin/container_daemon === /usr/local/bin/start_filecoin
+#
+# ENTRYPOINT ["/sbin/tini", "--", "/usr/local/bin/start_filecoin"]
+
+# COPY ./docker-entrypoint.sh /usr/local/bin/init_filecoin
+
+# RUN addgroup filecoin && \
+#     chown root:filecoin /usr/local/bin/init_filecoin && \
+#     chmod 750 /usr/local/bin/init_filecoin
+#
+# ENTRYPOINT ["/sbin/tini", "-v", "/usr/local/bin/init_filecoin"]
+# CMD ["/usr/local/bin/init_filecoin"]
 
 # Execute the daemon subcommand by default
-CMD ["daemon"]
+# CMD ["daemon"]

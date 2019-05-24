@@ -117,11 +117,12 @@ func deps() {
 		//  1. Makes it easier to cache dependencies in CI.
 		//  2. Makes it possible to fetch all deps ahead of time for
 		//     offline development.
-		cmd("go mod download"),
+                // THIS SHOULD BE DONE IN DOCKERFILE ONLY.
+		// cmd("go mod download"),
 		// Download and build proofs.
-		cmd("./scripts/install-rust-fil-proofs.sh"),
-		cmd("./scripts/install-bls-signatures.sh"),
-		cmd("./scripts/install-filecoin-parameters.sh"),
+		// cmd("./scripts/install-rust-fil-proofs.sh"),
+		// cmd("./scripts/install-bls-signatures.sh"),
+		// cmd("./scripts/install-filecoin-parameters.sh"),
 	}
 
 	for _, c := range cmds {
